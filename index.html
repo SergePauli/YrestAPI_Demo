@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>YrestAPI Demo</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="page-shell" id="page-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">YrestAPI Demo</p>
+          <h1>Primary accounting documents overview</h1>
+          <p class="hero-copy">
+            A compact registry and a structured detail view for heterogeneous accounting documents.
+          </p>
+        </div>
+        <div class="hero-stats" id="hero-stats"></div>
+      </header>
+
+      <main class="workspace">
+        <aside class="sidebar panel">
+          <div class="panel-head">
+            <div>
+              <p class="panel-kicker">Documents</p>
+              <h2>Registry</h2>
+            </div>
+            <span class="mono" id="document-count"></span>
+          </div>
+
+          <div class="controls">
+            <label class="field">
+              <span>Search</span>
+              <input id="search-input" type="search" placeholder="Number, counterparty, tax id..." />
+            </label>
+
+            <label class="field">
+              <span>Document type</span>
+              <select id="type-filter"></select>
+            </label>
+          </div>
+
+          <div class="document-list" id="document-list"></div>
+        </aside>
+
+        <section class="details panel">
+          <div id="document-details"></div>
+        </section>
+      </main>
+    </div>
+
+    <script src="./app.js"></script>
+  </body>
+</html>
