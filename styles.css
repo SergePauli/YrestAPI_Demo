@@ -84,16 +84,30 @@ body::before {
 }
 
 .page-shell.hero-collapsed {
-  grid-template-rows: 0 minmax(0, 1fr);
+  grid-template-rows: 12px minmax(0, 1fr);
 }
 
 .page-shell.hero-collapsed .hero {
-  opacity: 0;
-  transform: translateY(-12px);
-  max-height: 0;
+  opacity: 0.08;
+  transform: translateY(-18px);
+  max-height: 12px;
   padding-top: 0;
   padding-bottom: 0;
-  border-width: 0;
+  border-width: 1px;
+  pointer-events: none;
+}
+
+.page-shell.hero-collapsed.hero-peek {
+  grid-template-rows: auto minmax(0, 1fr);
+}
+
+.page-shell.hero-collapsed.hero-peek .hero {
+  opacity: 1;
+  transform: translateY(0);
+  max-height: 320px;
+  padding-top: 22px;
+  padding-bottom: 22px;
+  pointer-events: auto;
 }
 
 .eyebrow,

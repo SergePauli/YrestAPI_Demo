@@ -1,0 +1,7 @@
+{
+  "name": "yrestapi-demo",
+  "private": true,
+  "scripts": {
+    "test": "node --test"
+  }
+}

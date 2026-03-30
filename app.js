@@ -346,22 +346,30 @@ const documents = [
   },
 ];
 
-const state = {
-  search: "",
-  typeId: "all",
-  selectedDocumentId: documents[0]?.id ?? null,
-};
+function createInitialState() {
+  return {
+    search: "",
+    typeId: "all",
+    selectedDocumentId: documents[0]?.id ?? null,
+    heroPinnedCollapsed: false,
+    heroForcedVisible: false,
+    lastRegistryScrollTop: 0,
+    lastDetailsScrollTop: 0,
+  };
+}
 
-const elements = {
-  pageShell: document.getElementById("page-shell"),
-  heroStats: document.getElementById("hero-stats"),
-  documentCount: document.getElementById("document-count"),
-  typeFilter: document.getElementById("type-filter"),
-  searchInput: document.getElementById("search-input"),
-  documentList: document.getElementById("document-list"),
-  details: document.getElementById("document-details"),
-  detailsPanel: document.querySelector(".details"),
-};
+function createElements(doc) {
+  return {
+    pageShell: doc?.getElementById("page-shell") ?? null,
+    heroStats: doc?.getElementById("hero-stats") ?? null,
+    documentCount: doc?.getElementById("document-count") ?? null,
+    typeFilter: doc?.getElementById("type-filter") ?? null,
+    searchInput: doc?.getElementById("search-input") ?? null,
+    documentList: doc?.getElementById("document-list") ?? null,
+    details: doc?.getElementById("document-details") ?? null,
+    detailsPanel: doc?.querySelector(".details") ?? null,
+  };
+}
 
 function formatMoney(value, currency) {
   return new Intl.NumberFormat("ru-RU", {
@@ -379,16 +387,16 @@ function formatDate(value) {
   }).format(new Date(value));
 }
 
-function countAllNodes(items) {
-  return items.reduce((total, document) => total + flattenNodes(document.nodes).length, 0);
-}
-
 function flattenNodes(nodes, level = 0, parentPath = "") {
   return nodes.flatMap((node, index) => {
     const path = parentPath ? `${parentPath}.${index + 1}` : `${index + 1}`;
     const current = { ...node, level, path };
     return [current, ...flattenNodes(node.children, level + 1, path)];
   });
+}
+
+function countAllNodes(items) {
+  return items.reduce((total, document) => total + flattenNodes(document.nodes).length, 0);
 }
 
 function withNodePaths(nodes, parentPath = "") {
@@ -400,142 +408,6 @@ function withNodePaths(nodes, parentPath = "") {
       children: withNodePaths(node.children, path),
     };
   });
-}
-
-function getFilteredDocuments() {
-  const query = state.search.trim().toLowerCase();
-  return documents.filter((document) => {
-    const matchesType = state.typeId === "all" || document.doc_type.id === state.typeId;
-    if (!matchesType) return false;
-
-    if (!query) return true;
-
-    const haystack = [
-      document.number,
-      document.summary,
-      document.counterparty.name,
-      document.counterparty.inn,
-      document.doc_type.name,
-      ...flattenNodes(document.nodes).flatMap((node) => [
-        node.doc_type_node.name,
-        node.doc_type_node.description,
-        ...node.attributes.map((attribute) => `${attribute.name} ${attribute.value}`),
-      ]),
-    ]
-      .join(" ")
-      .toLowerCase();
-
-    return haystack.includes(query);
-  });
-}
-
-function ensureSelection(filteredDocuments) {
-  if (!filteredDocuments.some((document) => document.id === state.selectedDocumentId)) {
-    state.selectedDocumentId = filteredDocuments[0]?.id ?? null;
-  }
-}
-
-function renderStats() {
-  const totalAmount = documents.reduce((sum, document) => sum + document.amount, 0);
-  const stats = [
-    { label: "Documents", value: String(documents.length) },
-    { label: "Document types", value: String(docTypes.length) },
-    { label: "Nodes in trees", value: String(countAllNodes(documents)) },
-    { label: "Total amount", value: formatMoney(totalAmount, "RUB") },
-  ];
-
-  elements.heroStats.innerHTML = stats
-    .map(
-      (stat) => `
-        <article class="stat-card">
-          <span>${stat.label}</span>
-          <strong>${stat.value}</strong>
-        </article>
-      `
-    )
-    .join("");
-}
-
-function renderTypeFilter() {
-  const options = [
-    '<option value="all">All document types</option>',
-    ...docTypes.map(
-      (type) => `<option value="${type.id}">${type.code} · ${type.name}</option>`
-    ),
-  ];
-
-  elements.typeFilter.innerHTML = options.join("");
-  elements.typeFilter.value = state.typeId;
-}
-
-function renderDocumentList(filteredDocuments) {
-  elements.documentCount.textContent = `${filteredDocuments.length} items`;
-
-  if (!filteredDocuments.length) {
-    elements.documentList.innerHTML = `
-      <div class="empty-state">
-        <h3>No documents found</h3>
-        <p>Adjust the filter or search query.</p>
-      </div>
-    `;
-    return;
-  }
-
-  elements.documentList.innerHTML = filteredDocuments
-    .map((document) => {
-      const isActive = document.id === state.selectedDocumentId;
-      return `
-        <button class="doc-card ${isActive ? "active" : ""}" data-id="${document.id}" type="button">
-          <div class="doc-topline">
-            <span class="doc-type-pill">${document.doc_type.code}</span>
-            <div>
-              <h3>${document.number}</h3>
-              <p class="doc-subtitle">${document.counterparty.name}</p>
-            </div>
-            <span class="mono">${formatDate(document.date)}</span>
-          </div>
-          <p class="doc-subtitle">${document.summary}</p>
-          <div class="doc-metrics">
-            <div class="metric">
-              <span class="meta-label">Status</span>
-              <strong>${document.status}</strong>
-            </div>
-            <div class="metric">
-              <span class="meta-label">Amount</span>
-              <strong>${formatMoney(document.amount, document.currency)}</strong>
-            </div>
-          </div>
-        </button>
-      `;
-    })
-    .join("");
-
-  elements.documentList.querySelectorAll("[data-id]").forEach((button) => {
-    button.addEventListener("click", () => {
-      state.selectedDocumentId = Number(button.dataset.id);
-      render();
-      elements.detailsPanel.scrollTop = 0;
-      syncHeroVisibility();
-    });
-  });
-}
-
-function renderAttributes(attributes) {
-  if (!attributes.length) return "";
-  return `
-    <div class="attribute-list">
-      ${attributes
-        .map(
-          (attribute) => `
-            <article class="attribute-card">
-              <span class="attribute-name">${attribute.name}</span>
-              <strong class="attribute-value">${attribute.value}</strong>
-            </article>
-          `
-        )
-        .join("")}
-    </div>
-  `;
 }
 
 function canRenderChildrenAsTable(node) {
@@ -559,6 +431,24 @@ function canRenderChildrenAsTable(node) {
     if (child.attributes.length !== columnNames.length) return false;
     return child.attributes.every((attribute, index) => attribute.name === columnNames[index]);
   });
+}
+
+function renderAttributes(attributes) {
+  if (!attributes.length) return "";
+  return `
+    <div class="attribute-list">
+      ${attributes
+        .map(
+          (attribute) => `
+            <article class="attribute-card">
+              <span class="attribute-name">${attribute.name}</span>
+              <strong class="attribute-value">${attribute.value}</strong>
+            </article>
+          `
+        )
+        .join("")}
+    </div>
+  `;
 }
 
 function renderChildrenTable(node) {
@@ -613,9 +503,135 @@ function renderNode(node) {
   `;
 }
 
-function renderDetails(document) {
+function getFilteredDocuments(app) {
+  const query = app.state.search.trim().toLowerCase();
+  return app.documents.filter((document) => {
+    const matchesType = app.state.typeId === "all" || document.doc_type.id === app.state.typeId;
+    if (!matchesType) return false;
+
+    if (!query) return true;
+
+    const haystack = [
+      document.number,
+      document.summary,
+      document.counterparty.name,
+      document.counterparty.inn,
+      document.doc_type.name,
+      ...flattenNodes(document.nodes).flatMap((node) => [
+        node.doc_type_node.name,
+        node.doc_type_node.description,
+        ...node.attributes.map((attribute) => `${attribute.name} ${attribute.value}`),
+      ]),
+    ]
+      .join(" ")
+      .toLowerCase();
+
+    return haystack.includes(query);
+  });
+}
+
+function ensureSelection(app, filteredDocuments) {
+  if (!filteredDocuments.some((document) => document.id === app.state.selectedDocumentId)) {
+    app.state.selectedDocumentId = filteredDocuments[0]?.id ?? null;
+  }
+}
+
+function renderStats(app) {
+  if (!app.elements.heroStats) return;
+
+  const totalAmount = app.documents.reduce((sum, document) => sum + document.amount, 0);
+  const stats = [
+    { label: "Documents", value: String(app.documents.length) },
+    { label: "Document types", value: String(app.docTypes.length) },
+    { label: "Nodes in trees", value: String(countAllNodes(app.documents)) },
+    { label: "Total amount", value: formatMoney(totalAmount, "RUB") },
+  ];
+
+  app.elements.heroStats.innerHTML = stats
+    .map(
+      (stat) => `
+        <article class="stat-card">
+          <span>${stat.label}</span>
+          <strong>${stat.value}</strong>
+        </article>
+      `
+    )
+    .join("");
+}
+
+function renderTypeFilter(app) {
+  if (!app.elements.typeFilter) return;
+
+  const options = [
+    '<option value="all">All document types</option>',
+    ...app.docTypes.map((type) => `<option value="${type.id}">${type.code} · ${type.name}</option>`),
+  ];
+
+  app.elements.typeFilter.innerHTML = options.join("");
+  app.elements.typeFilter.value = app.state.typeId;
+}
+
+function renderDocumentList(app, filteredDocuments) {
+  if (!app.elements.documentList || !app.elements.documentCount) return;
+
+  app.elements.documentCount.textContent = `${filteredDocuments.length} items`;
+
+  if (!filteredDocuments.length) {
+    app.elements.documentList.innerHTML = `
+      <div class="empty-state">
+        <h3>No documents found</h3>
+        <p>Adjust the filter or search query.</p>
+      </div>
+    `;
+    return;
+  }
+
+  app.elements.documentList.innerHTML = filteredDocuments
+    .map((document) => {
+      const isActive = document.id === app.state.selectedDocumentId;
+      return `
+        <button class="doc-card ${isActive ? "active" : ""}" data-id="${document.id}" type="button">
+          <div class="doc-topline">
+            <span class="doc-type-pill">${document.doc_type.code}</span>
+            <div>
+              <h3>${document.number}</h3>
+              <p class="doc-subtitle">${document.counterparty.name}</p>
+            </div>
+            <span class="mono">${formatDate(document.date)}</span>
+          </div>
+          <p class="doc-subtitle">${document.summary}</p>
+          <div class="doc-metrics">
+            <div class="metric">
+              <span class="meta-label">Status</span>
+              <strong>${document.status}</strong>
+            </div>
+            <div class="metric">
+              <span class="meta-label">Amount</span>
+              <strong>${formatMoney(document.amount, document.currency)}</strong>
+            </div>
+          </div>
+        </button>
+      `;
+    })
+    .join("");
+
+  app.elements.documentList.querySelectorAll("[data-id]").forEach((button) => {
+    button.addEventListener("click", () => {
+      app.state.selectedDocumentId = Number(button.dataset.id);
+      app.render();
+      if (app.elements.detailsPanel) {
+        app.elements.detailsPanel.scrollTop = 0;
+      }
+      app.syncHeroVisibility();
+    });
+  });
+}
+
+function renderDetails(app, document) {
+  if (!app.elements.details) return;
+
   if (!document) {
-    elements.details.innerHTML = `
+    app.elements.details.innerHTML = `
       <div class="empty-state">
         <h3>No document selected</h3>
         <p>Select a record from the registry on the left.</p>
@@ -627,7 +643,7 @@ function renderDetails(document) {
   const flatNodes = flattenNodes(document.nodes);
   const attributeCount = flatNodes.reduce((total, node) => total + node.attributes.length, 0);
 
-  elements.details.innerHTML = `
+  app.elements.details.innerHTML = `
     <section class="detail-header">
       <div class="detail-topline">
         <div class="detail-number-block">
@@ -682,36 +698,122 @@ function renderDetails(document) {
   `;
 }
 
-function render() {
-  const filteredDocuments = getFilteredDocuments();
-  ensureSelection(filteredDocuments);
-  renderDocumentList(filteredDocuments);
-  renderDetails(filteredDocuments.find((document) => document.id === state.selectedDocumentId));
-  syncHeroVisibility();
+function syncHeroVisibility(app) {
+  const heroCollapsed = app.state.heroPinnedCollapsed && !app.state.heroForcedVisible;
+  const heroPeek = app.state.heroPinnedCollapsed && app.state.heroForcedVisible;
+  app.elements.pageShell?.classList.toggle("hero-collapsed", heroCollapsed);
+  app.elements.pageShell?.classList.toggle("hero-peek", heroPeek);
 }
 
-function syncHeroVisibility() {
-  const registryScrolled = (elements.documentList?.scrollTop ?? 0) > 8;
-  const detailsScrolled = (elements.detailsPanel?.scrollTop ?? 0) > 8;
-  elements.pageShell?.classList.toggle("hero-collapsed", registryScrolled || detailsScrolled);
+function handlePaneScroll(app, kind) {
+  const isRegistry = kind === "registry";
+  const target = isRegistry ? app.elements.documentList : app.elements.detailsPanel;
+  const currentScrollTop = target?.scrollTop ?? 0;
+  const lastKey = isRegistry ? "lastRegistryScrollTop" : "lastDetailsScrollTop";
+  const previousScrollTop = app.state[lastKey];
+
+  if (currentScrollTop > previousScrollTop && currentScrollTop > 8) {
+    app.state.heroPinnedCollapsed = true;
+    app.state.heroForcedVisible = false;
+  }
+
+  app.state[lastKey] = currentScrollTop;
+  syncHeroVisibility(app);
 }
 
-function bindEvents() {
-  elements.searchInput.addEventListener("input", (event) => {
-    state.search = event.target.value;
-    render();
+function bindEvents(app) {
+  app.elements.searchInput?.addEventListener("input", (event) => {
+    app.state.search = event.target.value;
+    app.render();
   });
 
-  elements.typeFilter.addEventListener("change", (event) => {
-    state.typeId = event.target.value;
-    render();
+  app.elements.typeFilter?.addEventListener("change", (event) => {
+    app.state.typeId = event.target.value;
+    app.render();
   });
 
-  elements.documentList.addEventListener("scroll", syncHeroVisibility, { passive: true });
-  elements.detailsPanel.addEventListener("scroll", syncHeroVisibility, { passive: true });
+  app.elements.documentList?.addEventListener("scroll", () => handlePaneScroll(app, "registry"), {
+    passive: true,
+  });
+  app.elements.detailsPanel?.addEventListener("scroll", () => handlePaneScroll(app, "details"), {
+    passive: true,
+  });
+
+  app.win?.addEventListener(
+    "mousemove",
+    (event) => {
+      if (event.clientY <= 24 && app.state.heroPinnedCollapsed) {
+        app.state.heroForcedVisible = true;
+        syncHeroVisibility(app);
+      }
+    },
+    { passive: true }
+  );
 }
 
-renderStats();
-renderTypeFilter();
-bindEvents();
-render();
+function createApp({ doc = globalThis.document, win = globalThis.window } = {}) {
+  const app = {
+    doc,
+    win,
+    docTypes,
+    documents,
+    state: createInitialState(),
+    elements: createElements(doc),
+    render() {
+      const filteredDocuments = getFilteredDocuments(app);
+      ensureSelection(app, filteredDocuments);
+      renderDocumentList(app, filteredDocuments);
+      renderDetails(
+        app,
+        filteredDocuments.find((document) => document.id === app.state.selectedDocumentId)
+      );
+      syncHeroVisibility(app);
+    },
+    renderStats() {
+      renderStats(app);
+    },
+    renderTypeFilter() {
+      renderTypeFilter(app);
+    },
+    bindEvents() {
+      bindEvents(app);
+    },
+    syncHeroVisibility() {
+      syncHeroVisibility(app);
+    },
+    handlePaneScroll(kind) {
+      handlePaneScroll(app, kind);
+    },
+    init() {
+      app.renderStats();
+      app.renderTypeFilter();
+      app.bindEvents();
+      app.render();
+      return app;
+    },
+  };
+
+  return app;
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = {
+    canRenderChildrenAsTable,
+    countAllNodes,
+    createApp,
+    createInitialState,
+    docTypes,
+    documents,
+    flattenNodes,
+    formatDate,
+    formatMoney,
+    renderAttributes,
+    renderChildrenTable,
+    renderNode,
+    withNodePaths,
+  };
+}
+
+if (typeof window !== "undefined" && typeof document !== "undefined") {
+  window.YrestDemoApp = createApp({ doc: document, win: window }).init();
+}
