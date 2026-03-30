@@ -1,0 +1,50 @@
+table: document_nodes
+
+relations:
+  document:
+    type: belongs_to
+    model: Document
+    fk: document_id
+  parent:
+    type: belongs_to
+    model: DocumentNode
+    fk: parent_id
+    reentrant: true
+    max_depth: 8
+  doc_type_node:
+    type: belongs_to
+    model: DocTypeNode
+    fk: doc_type_node_id
+  children:
+    type: has_many
+    model: DocumentNode
+    fk: parent_id
+    order: position ASC, id ASC
+    reentrant: true
+    max_depth: 8
+  attributes:
+    type: has_many
+    model: DocumentNodeAttribute
+    fk: document_node_id
+    order: position ASC, id ASC
+
+presets:
+  item:
+    fields:
+      - source: id
+        type: int
+      - source: parent_id
+        type: int
+      - source: doc_type_node
+        type: preset
+        preset: api_item
+      - source: attributes
+        type: preset
+        preset: api_item
+  tree:
+    extends: item
+    fields:
+      - source: children
+        type: preset
+        preset: tree
+        max_depth: 8

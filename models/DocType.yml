@@ -1,0 +1,26 @@
+table: doc_types
+
+relations:
+  nodes:
+    type: has_many
+    model: DocTypeNode
+    fk: doc_type_id
+    order: position ASC, id ASC
+
+presets:
+  item:
+    fields:
+      - source: id
+        type: int
+      - source: code
+        type: string
+      - source: name
+        type: string
+      - source: accent
+        type: string
+  with_nodes:
+    extends: item
+    fields:
+      - source: nodes
+        type: preset
+        preset: item

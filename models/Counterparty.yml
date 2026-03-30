@@ -1,0 +1,15 @@
+table: counterparties
+
+presets:
+  item:
+    fields:
+      - source: id
+        type: int
+      - source: name
+        type: string
+      - source: tin
+        alias: inn
+        type: string
+      - source: tax_registration_code
+        alias: kpp
+        type: string

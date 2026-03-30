@@ -353,6 +353,7 @@ function createInitialState() {
     selectedDocumentId: documents[0]?.id ?? null,
     heroPinnedCollapsed: false,
     heroForcedVisible: false,
+    heroStats: null,
     lastRegistryScrollTop: 0,
     lastDetailsScrollTop: 0,
   };
@@ -397,6 +398,27 @@ function flattenNodes(nodes, level = 0, parentPath = "") {
 
 function countAllNodes(items) {
   return items.reduce((total, document) => total + flattenNodes(document.nodes).length, 0);
+}
+
+function buildStatRequest(app) {
+  const filters = {};
+  if (app.state.typeId !== "all") {
+    const docType = app.docTypes.find((item) => item.id === app.state.typeId);
+    if (docType) {
+      filters["doc_type.code__eq"] = docType.code;
+    }
+  }
+
+  return {
+    model: "Document",
+    filters,
+    aggregates: {
+      total_amount: { fn: "sum", field: "amount" },
+      avg_amount: { fn: "avg", field: "amount" },
+      min_date: { fn: "min", field: "document_date" },
+      max_date: { fn: "max", field: "document_date" },
+    },
+  };
 }
 
 function withNodePaths(nodes, parentPath = "") {
@@ -536,16 +558,57 @@ function ensureSelection(app, filteredDocuments) {
   }
 }
 
+function buildLocalHeroStats(app) {
+  const filteredDocuments = getFilteredDocuments(app);
+  const totalAmount = filteredDocuments.reduce((sum, document) => sum + document.amount, 0);
+  const dates = filteredDocuments.map((document) => document.date).sort();
+
+  return [
+    { label: "Documents", value: String(filteredDocuments.length) },
+    { label: "Total amount", value: formatMoney(totalAmount, "RUB") },
+    {
+      label: "Average amount",
+      value:
+        filteredDocuments.length > 0
+          ? formatMoney(totalAmount / filteredDocuments.length, "RUB")
+          : formatMoney(0, "RUB"),
+    },
+    {
+      label: "Date range",
+      value:
+        dates.length > 0 ? `${formatDate(dates[0])} - ${formatDate(dates[dates.length - 1])}` : "N/A",
+    },
+  ];
+}
+
+function buildRemoteHeroStats(_app, payload) {
+  if (!payload || typeof payload !== "object") return null;
+
+  const aggregates = payload.aggregates ?? {};
+  const minDate = aggregates.min_date;
+  const maxDate = aggregates.max_date;
+
+  return [
+    { label: "Documents", value: String(payload.count ?? 0) },
+    {
+      label: "Total amount",
+      value: formatMoney(Number(aggregates.total_amount ?? 0), "RUB"),
+    },
+    {
+      label: "Average amount",
+      value: formatMoney(Number(aggregates.avg_amount ?? 0), "RUB"),
+    },
+    {
+      label: "Date range",
+      value: minDate && maxDate ? `${formatDate(minDate)} - ${formatDate(maxDate)}` : "N/A",
+    },
+  ];
+}
+
 function renderStats(app) {
   if (!app.elements.heroStats) return;
 
-  const totalAmount = app.documents.reduce((sum, document) => sum + document.amount, 0);
-  const stats = [
-    { label: "Documents", value: String(app.documents.length) },
-    { label: "Document types", value: String(app.docTypes.length) },
-    { label: "Nodes in trees", value: String(countAllNodes(app.documents)) },
-    { label: "Total amount", value: formatMoney(totalAmount, "RUB") },
-  ];
+  const stats = app.state.heroStats ?? buildLocalHeroStats(app);
 
   app.elements.heroStats.innerHTML = stats
     .map(
@@ -557,6 +620,33 @@ function renderStats(app) {
       `
     )
     .join("");
+}
+
+async function loadHeroStats(app) {
+  if (typeof app.fetchImpl !== "function") return;
+
+  try {
+    const response = await app.fetchImpl(`${app.apiBaseUrl}/api/stat`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(buildStatRequest(app)),
+    });
+
+    if (!response?.ok) {
+      throw new Error(`HTTP ${response?.status ?? "unknown"}`);
+    }
+
+    const payload = await response.json();
+    const stats = buildRemoteHeroStats(app, payload);
+    if (!stats) return;
+    app.state.heroStats = stats;
+    renderStats(app);
+  } catch (_error) {
+    app.state.heroStats = null;
+    renderStats(app);
+  }
 }
 
 function renderTypeFilter(app) {
@@ -730,6 +820,7 @@ function bindEvents(app) {
   app.elements.typeFilter?.addEventListener("change", (event) => {
     app.state.typeId = event.target.value;
     app.render();
+    void app.loadHeroStats();
   });
 
   app.elements.documentList?.addEventListener("scroll", () => handlePaneScroll(app, "registry"), {
@@ -751,10 +842,17 @@ function bindEvents(app) {
   );
 }
 
-function createApp({ doc = globalThis.document, win = globalThis.window } = {}) {
+function createApp({
+  doc = globalThis.document,
+  win = globalThis.window,
+  fetchImpl = globalThis.fetch,
+  apiBaseUrl = "",
+} = {}) {
   const app = {
     doc,
     win,
+    fetchImpl,
+    apiBaseUrl,
     docTypes,
     documents,
     state: createInitialState(),
@@ -762,6 +860,8 @@ function createApp({ doc = globalThis.document, win = globalThis.window } = {}) 
     render() {
       const filteredDocuments = getFilteredDocuments(app);
       ensureSelection(app, filteredDocuments);
+      app.state.heroStats = null;
+      renderStats(app);
       renderDocumentList(app, filteredDocuments);
       renderDetails(
         app,
@@ -771,6 +871,9 @@ function createApp({ doc = globalThis.document, win = globalThis.window } = {}) 
     },
     renderStats() {
       renderStats(app);
+    },
+    loadHeroStats() {
+      return loadHeroStats(app);
     },
     renderTypeFilter() {
       renderTypeFilter(app);
@@ -789,6 +892,7 @@ function createApp({ doc = globalThis.document, win = globalThis.window } = {}) 
       app.renderTypeFilter();
       app.bindEvents();
       app.render();
+      void app.loadHeroStats();
       return app;
     },
   };
@@ -802,6 +906,9 @@ if (typeof module !== "undefined" && module.exports) {
     countAllNodes,
     createApp,
     createInitialState,
+    buildLocalHeroStats,
+    buildRemoteHeroStats,
+    buildStatRequest,
     docTypes,
     documents,
     flattenNodes,

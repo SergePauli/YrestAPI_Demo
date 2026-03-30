@@ -1,0 +1,25 @@
+table: document_node_attributes
+
+relations:
+  document_node:
+    type: belongs_to
+    model: DocumentNode
+    fk: document_node_id
+
+presets:
+  item:
+    fields:
+      - source: id
+        type: int
+      - source: name
+        type: string
+      - source: value
+        type: string
+      - source: position
+        type: int
+  api_item:
+    fields:
+      - source: name
+        type: string
+      - source: value
+        type: string

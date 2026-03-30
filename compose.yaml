@@ -1,0 +1,90 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-yrest_demo}
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    healthcheck:
+      test:
+        [
+          "CMD-SHELL",
+          "pg_isready -U ${POSTGRES_USER:-postgres} -d ${POSTGRES_DB:-yrest_demo}",
+        ]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+
+  db-migrate:
+    image: postgres:16-alpine
+    profiles: ["setup"]
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-yrest_demo}
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - ./db/migrations:/migrations:ro
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        for file in /migrations/*.sql; do
+          if [ -f "$file" ]; then
+            echo "Applying migration: $file"
+            psql -v ON_ERROR_STOP=1 -f "$file"
+          fi
+        done
+
+  db-seed:
+    image: postgres:16-alpine
+    profiles: ["setup"]
+    depends_on:
+      db-migrate:
+        condition: service_completed_successfully
+    environment:
+      PGHOST: db
+      PGPORT: 5432
+      PGDATABASE: ${POSTGRES_DB:-yrest_demo}
+      PGUSER: ${POSTGRES_USER:-postgres}
+      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
+    volumes:
+      - ./db/seeds:/seeds:ro
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        for file in /seeds/*.sql; do
+          if [ -f "$file" ]; then
+            echo "Applying seed: $file"
+            psql -v ON_ERROR_STOP=1 -f "$file"
+          fi
+        done
+
+  yrestapi:
+    build:
+      context: ../YrestAPI
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      PORT: ${PORT:-8080}
+      POSTGRES_DSN: ${POSTGRES_DSN:-postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@db:5432/${POSTGRES_DB:-yrest_demo}?sslmode=disable}
+      MODELS_DIR: /app/models
+      LOCALE: ${LOCALE:-en}
+      AUTH_ENABLED: ${AUTH_ENABLED:-false}
+    ports:
+      - "${HOST_PORT:-8080}:${PORT:-8080}"
+    volumes:
+      - ./models:/app/models:ro
+
+volumes:
+  postgres_data:

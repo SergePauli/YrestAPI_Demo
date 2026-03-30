@@ -1,0 +1,49 @@
+table: documents
+
+relations:
+  doc_type:
+    type: belongs_to
+    model: DocType
+    fk: doc_type_id
+  counterparty:
+    type: belongs_to
+    model: Counterparty
+    fk: counterparty_id
+  nodes:
+    type: has_many
+    model: DocumentNode
+    fk: document_id
+    where: .parent_id is null
+    order: position ASC, id ASC
+
+presets:
+  list_item:
+    fields:
+      - source: id
+        type: int
+      - source: number
+        type: string
+      - source: document_date
+        alias: date
+        type: date
+      - source: status
+        type: string
+      - source: amount
+        type: float
+      - source: currency_code
+        alias: currency
+        type: string
+      - source: summary
+        type: string
+      - source: counterparty
+        type: preset
+        preset: item
+      - source: doc_type
+        type: preset
+        preset: item
+  detail:
+    extends: list_item
+    fields:
+      - source: nodes
+        type: preset
+        preset: tree

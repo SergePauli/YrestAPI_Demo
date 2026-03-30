@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const {
   canRenderChildrenAsTable,
   createApp,
+  buildStatRequest,
   documents,
   flattenNodes,
   renderNode,
@@ -133,10 +134,10 @@ class FakeWindow {
   }
 }
 
-function setupApp() {
+function setupApp({ fetchImpl = null } = {}) {
   const doc = new FakeDocument();
   const win = new FakeWindow();
-  const app = createApp({ doc, win }).init();
+  const app = createApp({ doc, win, fetchImpl }).init();
   return { app, doc, win };
 }
 
@@ -157,6 +158,7 @@ test("init renders registry, stats, details, and wires handlers", () => {
   assert.ok(win.listeners.has("mousemove"));
 
   assert.equal(app.state.selectedDocumentId, 1001);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Average amount/);
 });
 
 test("search and type filter update rendered registry", () => {
@@ -228,4 +230,52 @@ test("flattenNodes preserves full node count and hierarchical paths", () => {
     nodes.map((node) => node.path),
     ["1", "2", "2.1", "2.2", "3"]
   );
+});
+
+test("hero stats request uses /api/stat and current type filter", async () => {
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    return {
+      ok: true,
+      async json() {
+        return {
+          count: 250,
+          aggregates: {
+            total_amount: 1234567.89,
+            avg_amount: 4938.27,
+            min_date: "2026-01-01",
+            max_date: "2026-03-30",
+          },
+        };
+      },
+    };
+  };
+
+  const { app, doc } = setupApp({ fetchImpl });
+
+  await app.loadHeroStats();
+  assert.equal(requests[0].url, "/api/stat");
+  assert.deepEqual(JSON.parse(requests[0].options.body), buildStatRequest(app));
+  assert.match(doc.byId["hero-stats"].innerHTML, /1 234 567,89/);
+
+  doc.byId["type-filter"].dispatch("change", { target: { value: "invoice" } });
+  await app.loadHeroStats();
+
+  const payload = JSON.parse(requests[requests.length - 1].options.body);
+  assert.equal(payload.filters["doc_type.code__eq"], "INV");
+});
+
+test("hero stats fall back to local values when /api/stat fails", async () => {
+  const fetchImpl = async () => {
+    throw new Error("network down");
+  };
+
+  const { app, doc } = setupApp({ fetchImpl });
+  await app.loadHeroStats();
+
+  assert.match(doc.byId["hero-stats"].innerHTML, /Documents/);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Average amount/);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Date range/);
+  assert.match(doc.byId["hero-stats"].innerHTML, /375 300,00/);
 });

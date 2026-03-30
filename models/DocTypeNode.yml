@@ -1,0 +1,53 @@
+table: doc_type_nodes
+
+relations:
+  doc_type:
+    type: belongs_to
+    model: DocType
+    fk: doc_type_id
+  parent:
+    type: belongs_to
+    model: DocTypeNode
+    fk: parent_id
+    reentrant: true
+    max_depth: 8
+  children:
+    type: has_many
+    model: DocTypeNode
+    fk: parent_id
+    order: position ASC, id ASC
+    reentrant: true
+    max_depth: 8
+  attributes:
+    type: has_many
+    model: DocTypeNodeAttribute
+    fk: doc_type_node_id
+    order: position ASC, id ASC
+
+presets:
+  item:
+    fields:
+      - source: id
+        type: int
+      - source: doc_type_id
+        type: int
+      - source: parent_id
+        type: int
+      - source: key
+        type: string
+      - source: name
+        type: string
+      - source: description
+        type: string
+      - source: render_mode
+        type: string
+      - source: position
+        type: int
+  api_item:
+    fields:
+      - source: key
+        type: string
+      - source: name
+        type: string
+      - source: description
+        type: string
