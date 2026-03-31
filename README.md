@@ -19,6 +19,13 @@ python3 -m http.server 4173
 
 The app will then be available at `http://localhost:4173`.
 
+Frontend API targeting:
+
+- if the page is opened via `file://.../index.html`, the frontend will target `http://localhost:8080`
+- if the page is served from `http://localhost:<other-port>`, the frontend will also target `http://localhost:8080`
+- if the page is served from the same origin as the API, the frontend uses same-origin `/api/...`
+- you can override this explicitly with `?apiBaseUrl=http://localhost:8080`
+
 ## Backend Stack
 
 This repository now includes a Compose stack in [compose.yaml](/home/serge/Projects/YrestAPI_Demo/compose.yaml):
@@ -35,6 +42,11 @@ The mounted directories are:
 - [models](/home/serge/Projects/YrestAPI_Demo/models): YrestAPI `.yml` model files
 
 Optional environment defaults are provided in [.env.example](/home/serge/Projects/YrestAPI_Demo/.env.example).
+
+For local frontend development on `http://127.0.0.1:5500`, CORS is exposed through:
+
+- `CORS_ALLOW_ORIGIN=http://127.0.0.1:5500`
+- `CORS_ALLOW_CREDENTIALS=false`
 
 To start the backend stack:
 

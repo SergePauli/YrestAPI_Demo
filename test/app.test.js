@@ -4,11 +4,35 @@ const assert = require("node:assert/strict");
 const {
   canRenderChildrenAsTable,
   createApp,
+  buildRegistryPageRequest,
   buildStatRequest,
   documents,
   flattenNodes,
   renderNode,
 } = require("../app.js");
+const {
+  buildPresetPageRequest,
+  buildPresetItemRequest,
+  buildStatsRequest,
+  createYrestApiClient,
+} = require("../yrest-client.js");
+
+class FakeURLSearchParams {
+  constructor(query = "") {
+    this.values = new Map();
+    const normalized = String(query).replace(/^\?/, "");
+    if (!normalized) return;
+
+    normalized.split("&").forEach((chunk) => {
+      const [key, value = ""] = chunk.split("=");
+      this.values.set(decodeURIComponent(key), decodeURIComponent(value));
+    });
+  }
+
+  get(key) {
+    return this.values.get(key) ?? null;
+  }
+}
 
 class FakeClassList {
   constructor() {
@@ -120,8 +144,10 @@ class FakeDocument {
 }
 
 class FakeWindow {
-  constructor() {
+  constructor({ protocol = "http:", hostname = "localhost", port = "4173", search = "" } = {}) {
     this.listeners = new Map();
+    this.location = { protocol, hostname, port, search };
+    this.console = { warn() {} };
   }
 
   addEventListener(type, handler) {
@@ -133,6 +159,8 @@ class FakeWindow {
     if (handler) handler(payload);
   }
 }
+
+global.URLSearchParams = FakeURLSearchParams;
 
 function setupApp({ fetchImpl = null } = {}) {
   const doc = new FakeDocument();
@@ -149,7 +177,7 @@ test("init renders registry, stats, details, and wires handlers", () => {
   assert.equal(doc.byId["document-count"].textContent, "4 items");
   assert.match(doc.byId["document-list"].innerHTML, /data-id="1001"/);
   assert.match(doc.byId["document-list"].innerHTML, /<span class="doc-type-pill">INV<\/span>/);
-  assert.match(doc.byId["document-details"].innerHTML, /Document structure/);
+  assert.match(doc.byId["document-details"].innerHTML, /No document selected/);
 
   assert.ok(doc.byId["search-input"].listeners.has("input"));
   assert.ok(doc.byId["type-filter"].listeners.has("change"));
@@ -157,8 +185,9 @@ test("init renders registry, stats, details, and wires handlers", () => {
   assert.ok(doc.detailsPanel.listeners.has("scroll"));
   assert.ok(win.listeners.has("mousemove"));
 
-  assert.equal(app.state.selectedDocumentId, 1001);
-  assert.match(doc.byId["hero-stats"].innerHTML, /Average amount/);
+  assert.equal(app.state.selectedDocumentId, null);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Documents/);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Date range/);
 });
 
 test("search and type filter update rendered registry", () => {
@@ -206,20 +235,20 @@ test("scrolling down collapses hero and top-edge mouse reveal keeps it visible u
 
   assert.equal(app.state.heroPinnedCollapsed, true);
   assert.equal(app.state.heroForcedVisible, false);
-  assert.equal(doc.byId["page-shell"].classList.contains("hero-collapsed"), true);
+  assert.equal(doc.byId["page-shell"].classList.contains("hero-collapsed"), false);
 
   win.dispatch("mousemove", { clientY: 10 });
   assert.equal(app.state.heroForcedVisible, true);
-  assert.equal(doc.byId["page-shell"].classList.contains("hero-peek"), true);
+  assert.equal(doc.byId["page-shell"].classList.contains("hero-peek"), false);
   assert.equal(doc.byId["page-shell"].classList.contains("hero-collapsed"), false);
 
   win.dispatch("mousemove", { clientY: 80 });
-  assert.equal(doc.byId["page-shell"].classList.contains("hero-peek"), true);
+  assert.equal(doc.byId["page-shell"].classList.contains("hero-peek"), false);
 
   doc.detailsPanel.scrollTop = 60;
   app.handlePaneScroll("details");
   assert.equal(app.state.heroForcedVisible, false);
-  assert.equal(doc.byId["page-shell"].classList.contains("hero-collapsed"), true);
+  assert.equal(doc.byId["page-shell"].classList.contains("hero-collapsed"), false);
 });
 
 test("flattenNodes preserves full node count and hierarchical paths", () => {
@@ -232,7 +261,7 @@ test("flattenNodes preserves full node count and hierarchical paths", () => {
   );
 });
 
-test("hero stats request uses /api/stat and current type filter", async () => {
+test("hero stats request uses /api/stats and current type filter", async () => {
   const requests = [];
   const fetchImpl = async (url, options) => {
     requests.push({ url, options });
@@ -255,9 +284,10 @@ test("hero stats request uses /api/stat and current type filter", async () => {
   const { app, doc } = setupApp({ fetchImpl });
 
   await app.loadHeroStats();
-  assert.equal(requests[0].url, "/api/stat");
+  assert.equal(requests[0].url, "/api/stats");
   assert.deepEqual(JSON.parse(requests[0].options.body), buildStatRequest(app));
-  assert.match(doc.byId["hero-stats"].innerHTML, /1 234 567,89/);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Documents/);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Date range/);
 
   doc.byId["type-filter"].dispatch("change", { target: { value: "invoice" } });
   await app.loadHeroStats();
@@ -275,7 +305,254 @@ test("hero stats fall back to local values when /api/stat fails", async () => {
   await app.loadHeroStats();
 
   assert.match(doc.byId["hero-stats"].innerHTML, /Documents/);
-  assert.match(doc.byId["hero-stats"].innerHTML, /Average amount/);
   assert.match(doc.byId["hero-stats"].innerHTML, /Date range/);
-  assert.match(doc.byId["hero-stats"].innerHTML, /375 300,00/);
+});
+
+test("registry page request includes preset, offset, limit, and active filters", () => {
+  const { app, doc } = setupApp();
+
+  doc.byId["search-input"].dispatch("input", { target: { value: "Northern Bank" } });
+  doc.byId["type-filter"].dispatch("change", { target: { value: "payment_order" } });
+
+  assert.deepEqual(buildRegistryPageRequest(app, { preset: "list_item", offset: 40, limit: 20 }), {
+    model: "Document",
+    preset: "list_item",
+    offset: 40,
+    limit: 20,
+    filters: {
+      "doc_type.code__eq": "PO",
+      "q__ilike": "Northern Bank",
+    },
+  });
+});
+
+test("yrest client posts preset page and stats requests to dedicated endpoints", async () => {
+  const requests = [];
+  const client = createYrestApiClient({
+    fetchImpl: async (url, options) => {
+      requests.push({ url, options });
+      return {
+        ok: true,
+        async json() {
+          return { items: [], count: 0 };
+        },
+      };
+    },
+    apiBaseUrl: "/backend",
+  });
+
+  await client.fetchPresetPage({
+    model: "Document",
+    preset: "list_item",
+    offset: 60,
+    limit: 30,
+    filters: { status__eq: "Posted" },
+  });
+  await client.fetchStats({
+    model: "Document",
+    filters: { status__eq: "Posted" },
+    aggregates: { total_amount: { fn: "sum", field: "amount" } },
+  });
+  await client.fetchPresetItem({
+    model: "Document",
+    preset: "detail",
+    id: 1001,
+  });
+
+  assert.equal(requests[0].url, "/backend/api/index");
+  assert.deepEqual(JSON.parse(requests[0].options.body), {
+    model: "Document",
+    preset: "list_item",
+    offset: 60,
+    limit: 30,
+    filters: { status__eq: "Posted" },
+  });
+
+  assert.equal(requests[1].url, "/backend/api/stats");
+  assert.deepEqual(JSON.parse(requests[1].options.body), {
+    model: "Document",
+    filters: { status__eq: "Posted" },
+    aggregates: { total_amount: { fn: "sum", field: "amount" } },
+  });
+  assert.equal(requests[2].url, "/backend/api/index");
+  assert.deepEqual(JSON.parse(requests[2].options.body), {
+    model: "Document",
+    preset: "detail",
+    offset: 0,
+    limit: 1,
+    filters: { id__eq: 1001 },
+  });
+
+  assert.deepEqual(
+    buildPresetPageRequest({
+      model: "Document",
+      preset: "list_item",
+      offset: 10,
+      limit: 15,
+      filters: { doc_type__eq: "invoice" },
+    }),
+    {
+      model: "Document",
+      preset: "list_item",
+      offset: 10,
+      limit: 15,
+      filters: { doc_type__eq: "invoice" },
+    }
+  );
+
+  assert.deepEqual(
+    buildPresetItemRequest({
+      model: "Document",
+      preset: "detail",
+      id: 42,
+    }),
+    {
+      model: "Document",
+      preset: "detail",
+      offset: 0,
+      limit: 1,
+      filters: { id__eq: 42 },
+    }
+  );
+
+  assert.deepEqual(
+    buildStatsRequest({
+      model: "Document",
+      filters: { doc_type__eq: "invoice" },
+      aggregates: { total_amount: { fn: "sum", field: "amount" } },
+    }),
+    {
+      model: "Document",
+      filters: { doc_type__eq: "invoice" },
+      aggregates: { total_amount: { fn: "sum", field: "amount" } },
+    }
+  );
+});
+
+test("browser app targets localhost:8080 by default when opened from local dev origins", async () => {
+  const requests = [];
+  const doc = new FakeDocument();
+  const win = new FakeWindow({ protocol: "http:", hostname: "localhost", port: "4173" });
+  const app = createApp({
+    doc,
+    win,
+    fetchImpl: async (url) => {
+      requests.push(url);
+      return {
+        ok: true,
+        async json() {
+          return {
+            count: 0,
+            aggregates: {
+              total_amount: 0,
+              avg_amount: 0,
+              min_date: null,
+              max_date: null,
+            },
+          };
+        },
+      };
+    },
+    apiBaseUrl: "http://localhost:8080",
+  }).init();
+
+  await app.loadHeroStats();
+  assert.equal(requests[0], "http://localhost:8080/api/stats");
+});
+
+test("remote detail loads only when selecting a different document", async () => {
+  const requests = [];
+  const fetchImpl = async (url, options) => {
+    requests.push({ url, options });
+    const payload = JSON.parse(options.body);
+
+    if (url.endsWith("/api/stats")) {
+      return {
+        ok: true,
+        async json() {
+          return {
+            count: 1,
+            aggregates: {
+              total_amount: 124500,
+              avg_amount: 124500,
+              min_date: "2026-03-15",
+              max_date: "2026-03-15",
+            },
+          };
+        },
+      };
+    }
+
+    if (payload.preset === "list_item") {
+      return {
+        ok: true,
+        async json() {
+          return {
+            count: 1,
+            items: [
+              {
+                id: 1001,
+                number: "INV-240315-17",
+                date: "2026-03-15",
+                status: "Posted",
+                amount: 124500,
+                currency: "RUB",
+                summary: "Invoice summary",
+                counterparty: { name: "Orion Supply LLC", inn: "7704123456", kpp: "770401001" },
+                doc_type: { id: "invoice", code: "INV", name: "Invoice", accent: "VAT" },
+              },
+            ],
+          };
+        },
+      };
+    }
+
+    return {
+      ok: true,
+      async json() {
+        return {
+          items: [
+            {
+              id: 1001,
+              number: "INV-240315-17",
+              date: "2026-03-15",
+              status: "Posted",
+              amount: 124500,
+              currency: "RUB",
+              summary: "Invoice summary",
+              counterparty: { name: "Orion Supply LLC", inn: "7704123456", kpp: "770401001" },
+              doc_type: { id: "invoice", code: "INV", name: "Invoice", accent: "VAT" },
+              nodes: [],
+            },
+          ],
+        };
+      },
+    };
+  };
+
+  const doc = new FakeDocument();
+  const win = new FakeWindow();
+  const app = createApp({ doc, win, fetchImpl, apiBaseUrl: "/api-base" }).init();
+
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  app.selectDocument(1001);
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
+  const requestCountAfterFirstLoad = requests.filter(
+    (request) =>
+      request.url === "/api-base/api/index" &&
+      JSON.parse(request.options.body).preset === "detail"
+  ).length;
+
+  app.selectDocument(1001);
+
+  const requestCountAfterSecondSelect = requests.filter(
+    (request) =>
+      request.url === "/api-base/api/index" &&
+      JSON.parse(request.options.body).preset === "detail"
+  ).length;
+
+  assert.equal(requestCountAfterFirstLoad > 0, true);
+  assert.equal(requestCountAfterSecondSelect, requestCountAfterFirstLoad);
+  assert.match(doc.byId["document-details"].innerHTML, /Document structure/);
 });

@@ -228,6 +228,7 @@ select
 from document_nodes dn
 join doc_type_nodes dtn on dtn.id = dn.doc_type_node_id
 join documents d on d.id = dn.document_id
+join doc_types dt on dt.id = d.doc_type_id
 join counterparties c on c.id = d.counterparty_id
 join lateral (
   select *
@@ -386,7 +387,13 @@ join lateral (
       (
         'purpose',
         'Text',
-        format('Settlement for %s document %s dated %s for %s.', dt.code, d.number, to_char(d.document_date, 'YYYY-MM-DD'), c.name),
+        format(
+          'Settlement for %s document %s dated %s for %s.',
+          split_part(d.number, '-', 1),
+          d.number,
+          to_char(d.document_date, 'YYYY-MM-DD'),
+          c.name
+        ),
         null::date,
         null::bigint,
         null::double precision,
@@ -445,7 +452,7 @@ join lateral (
       )
   ) as v(node_key, name, value, value_date, value_int, value_double, value_boolean, position)
 ) as a on a.node_key = dtn.key
-join doc_types dt on dt.id = d.doc_type_id;
+;
 
 insert into document_node_attributes (
   document_node_id,

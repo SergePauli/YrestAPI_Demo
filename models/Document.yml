@@ -1,5 +1,13 @@
 table: documents
 
+aggregatable:
+  amount:
+    type: float
+    functions: [sum, avg, min, max]
+  document_date:
+    type: date
+    functions: [min, max]
+
 relations:
   doc_type:
     type: belongs_to

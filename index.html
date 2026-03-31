@@ -15,7 +15,7 @@
   <body>
     <div class="page-shell" id="page-shell">
       <header class="hero">
-        <div>
+        <div class="hero-copy-block">
           <p class="eyebrow">YrestAPI Demo</p>
           <h1>Primary accounting documents overview</h1>
           <p class="hero-copy">
@@ -37,25 +37,32 @@
 
           <div class="controls">
             <label class="field">
-              <span>Search</span>
-              <input id="search-input" type="search" placeholder="Number, counterparty, tax id..." />
+              <div class="field-control">
+                <span class="field-addon">Search</span>
+                <input id="search-input" type="search" placeholder="Number, counterparty, tax id..." />
+              </div>
             </label>
 
             <label class="field">
-              <span>Document type</span>
-              <select id="type-filter"></select>
+              <div class="field-control">
+                <span class="field-addon">Filter</span>
+                <select id="type-filter"></select>
+              </div>
             </label>
           </div>
 
-          <div class="document-list" id="document-list"></div>
+          <div class="document-list-shell">
+            <div class="document-list" id="document-list"></div>
+          </div>
         </aside>
 
         <section class="details panel">
-          <div id="document-details"></div>
+          <div class="document-details-root" id="document-details"></div>
         </section>
       </main>
     </div>
 
+    <script src="./yrest-client.js"></script>
     <script src="./app.js"></script>
   </body>
 </html>

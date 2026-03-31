@@ -25,6 +25,39 @@ const docTypes = [
   },
 ];
 
+let createYrestApiClient = null;
+const DEFAULT_REGISTRY_CARD_HEIGHT = 176;
+const DEFAULT_REGISTRY_CARD_GAP = 12;
+
+if (typeof module !== "undefined" && module.exports) {
+  ({ createYrestApiClient } = require("./yrest-client.js"));
+} else {
+  createYrestApiClient = globalThis.YrestApiClient?.createYrestApiClient ?? null;
+}
+
+function resolveBrowserApiBaseUrl(win) {
+  const queryValue = win?.location ? new URLSearchParams(win.location.search).get("apiBaseUrl") : null;
+  if (queryValue) return queryValue.replace(/\/$/, "");
+
+  if (typeof win?.YREST_API_BASE_URL === "string" && win.YREST_API_BASE_URL.trim()) {
+    return win.YREST_API_BASE_URL.trim().replace(/\/$/, "");
+  }
+
+  const protocol = win?.location?.protocol;
+  const hostname = win?.location?.hostname;
+  const port = win?.location?.port;
+
+  if (protocol === "file:") {
+    return "http://localhost:8080";
+  }
+
+  if ((hostname === "localhost" || hostname === "127.0.0.1") && port && port !== "8080") {
+    return `http://${hostname}:8080`;
+  }
+
+  return "";
+}
+
 const documents = [
   {
     id: 1001,
@@ -350,12 +383,29 @@ function createInitialState() {
   return {
     search: "",
     typeId: "all",
-    selectedDocumentId: documents[0]?.id ?? null,
+    selectedDocumentId: null,
+    selectedDocumentDetail: null,
+    detailCache: new Map(),
+    detailLoading: false,
+    detailLoadError: false,
+    detailRequestId: 0,
+    registryScrollRafId: null,
+    registryPendingLoad: false,
+    registryPendingForce: false,
     heroPinnedCollapsed: false,
     heroForcedVisible: false,
     heroStats: null,
     lastRegistryScrollTop: 0,
     lastDetailsScrollTop: 0,
+    registryCache: new Map(),
+    registryTotalCount: documents.length,
+    registryOffset: 0,
+    registryLimit: 0,
+    registryRequestedOffset: 0,
+    registryRequestedLimit: 0,
+    registryLoading: false,
+    registryLoadError: false,
+    registryRequestId: 0,
   };
 }
 
@@ -400,14 +450,28 @@ function countAllNodes(items) {
   return items.reduce((total, document) => total + flattenNodes(document.nodes).length, 0);
 }
 
-function buildStatRequest(app) {
+function buildRegistryFilters(app, extraFilters = {}) {
   const filters = {};
+
   if (app.state.typeId !== "all") {
     const docType = app.docTypes.find((item) => item.id === app.state.typeId);
     if (docType) {
       filters["doc_type.code__eq"] = docType.code;
     }
   }
+
+  if (app.state.search.trim()) {
+    filters["q__ilike"] = app.state.search.trim();
+  }
+
+  return {
+    ...filters,
+    ...extraFilters,
+  };
+}
+
+function buildStatRequest(app) {
+  const filters = buildRegistryFilters(app);
 
   return {
     model: "Document",
@@ -418,6 +482,16 @@ function buildStatRequest(app) {
       min_date: { fn: "min", field: "document_date" },
       max_date: { fn: "max", field: "document_date" },
     },
+  };
+}
+
+function buildRegistryPageRequest(app, { preset, offset = 0, limit = 20, filters = {} } = {}) {
+  return {
+    model: "Document",
+    preset,
+    offset,
+    limit,
+    filters: buildRegistryFilters(app, filters),
   };
 }
 
@@ -552,9 +626,39 @@ function getFilteredDocuments(app) {
   });
 }
 
-function ensureSelection(app, filteredDocuments) {
-  if (!filteredDocuments.some((document) => document.id === app.state.selectedDocumentId)) {
-    app.state.selectedDocumentId = filteredDocuments[0]?.id ?? null;
+function isRemoteRegistryEnabled(app) {
+  return Boolean(app.apiClient && typeof app.fetchImpl === "function" && !app.state.registryLoadError);
+}
+
+function getRegistryDocuments(app) {
+  if (!isRemoteRegistryEnabled(app)) {
+    return getFilteredDocuments(app);
+  }
+
+  return [...app.state.registryCache.entries()]
+    .sort((left, right) => left[0] - right[0])
+    .map(([, document]) => document);
+}
+
+function getRegistryTotalCount(app) {
+  return isRemoteRegistryEnabled(app) ? app.state.registryTotalCount : getFilteredDocuments(app).length;
+}
+
+function getSelectedDocument(app) {
+  if (isRemoteRegistryEnabled(app)) {
+    return app.state.selectedDocumentDetail;
+  }
+
+  return getRegistryDocuments(app).find((document) => document.id === app.state.selectedDocumentId) ?? null;
+}
+
+function ensureSelection(app, registryDocuments) {
+  if (
+    app.state.selectedDocumentId !== null &&
+    !registryDocuments.some((document) => document.id === app.state.selectedDocumentId)
+  ) {
+    app.state.selectedDocumentId = null;
+    app.state.selectedDocumentDetail = null;
   }
 }
 
@@ -609,8 +713,11 @@ function renderStats(app) {
   if (!app.elements.heroStats) return;
 
   const stats = app.state.heroStats ?? buildLocalHeroStats(app);
+  const visibleStats = stats.filter(
+    (stat) => stat.label === "Documents" || stat.label === "Date range"
+  );
 
-  app.elements.heroStats.innerHTML = stats
+  app.elements.heroStats.innerHTML = visibleStats
     .map(
       (stat) => `
         <article class="stat-card">
@@ -622,31 +729,403 @@ function renderStats(app) {
     .join("");
 }
 
+function renderRegistryViewport(app) {
+  const registryDocuments = getRegistryDocuments(app);
+  renderDocumentList(app, registryDocuments);
+}
+
 async function loadHeroStats(app) {
-  if (typeof app.fetchImpl !== "function") return;
+  if (!app.apiClient) return;
 
   try {
-    const response = await app.fetchImpl(`${app.apiBaseUrl}/api/stat`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify(buildStatRequest(app)),
-    });
-
-    if (!response?.ok) {
-      throw new Error(`HTTP ${response?.status ?? "unknown"}`);
-    }
-
-    const payload = await response.json();
+    const payload = await app.apiClient.fetchStats(buildStatRequest(app));
     const stats = buildRemoteHeroStats(app, payload);
     if (!stats) return;
+    app.state.registryTotalCount = Number(payload.count ?? 0);
     app.state.heroStats = stats;
     renderStats(app);
+    if (isRemoteRegistryEnabled(app)) {
+      await app.loadRegistryPage({ force: true });
+    }
   } catch (_error) {
+    app.state.registryLoadError = true;
+    app.state.registryTotalCount = documents.length;
     app.state.heroStats = null;
+    app.win?.console?.warn?.(
+      `YrestAPI stats request failed for ${app.apiBaseUrl || "same-origin"}; falling back to local demo data.`
+    );
     renderStats(app);
+    app.render();
   }
+}
+
+function getRegistryViewportHeight(app) {
+  return app.elements.documentList?.clientHeight ?? app.elements.documentList?.offsetHeight ?? 720;
+}
+
+function readCssPixelValue(win, element, propertyName, fallback) {
+  if (!win || !element || typeof win.getComputedStyle !== "function") {
+    return fallback;
+  }
+
+  const rawValue = win.getComputedStyle(element).getPropertyValue(propertyName).trim();
+  const parsed = Number.parseFloat(rawValue);
+  return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function getRegistryMetrics(app) {
+  const listElement = app.elements.documentList;
+  const cardHeight = readCssPixelValue(
+    app.win,
+    listElement,
+    "--registry-card-height",
+    DEFAULT_REGISTRY_CARD_HEIGHT
+  );
+  const rowGap = readCssPixelValue(
+    app.win,
+    listElement,
+    "--registry-row-gap",
+    DEFAULT_REGISTRY_CARD_GAP
+  );
+
+  return {
+    cardHeight,
+    rowGap,
+    rowStride: cardHeight + rowGap,
+  };
+}
+
+function getRegistryItemHeightEstimate(app) {
+  return getRegistryMetrics(app).rowStride;
+}
+
+function getRegistryBatchSize(app) {
+  const viewportHeight = getRegistryViewportHeight(app);
+  const visibleCount = Math.max(1, Math.ceil(viewportHeight / getRegistryItemHeightEstimate(app)));
+  return Math.max(visibleCount * 2, 12);
+}
+
+function getRegistryRenderWindow(app, documentsToRender) {
+  if (!isRemoteRegistryEnabled(app)) {
+    return {
+      offset: 0,
+      totalCount: documentsToRender.length,
+    };
+  }
+
+  if (app.state.registryLoading && app.state.registryRequestedLimit > 0) {
+    return {
+      offset: app.state.registryRequestedOffset,
+      totalCount: app.state.registryTotalCount,
+    };
+  }
+
+  return {
+    offset: app.state.registryOffset,
+    totalCount: app.state.registryTotalCount,
+  };
+}
+
+function renderRegistrySkeletonCard() {
+  return `
+    <article class="doc-card doc-card-skeleton" aria-hidden="true">
+      <div class="doc-topline">
+        <span class="doc-type-pill skeleton-block skeleton-pill"></span>
+        <div>
+          <div class="skeleton-block skeleton-title"></div>
+          <div class="skeleton-block skeleton-line skeleton-line-mid"></div>
+        </div>
+        <span class="skeleton-block skeleton-date"></span>
+      </div>
+      <div class="skeleton-block skeleton-line"></div>
+      <div class="skeleton-block skeleton-line skeleton-line-short"></div>
+      <div class="doc-metrics">
+        <div class="metric">
+          <span class="skeleton-block skeleton-metric-label"></span>
+          <span class="skeleton-block skeleton-metric-value"></span>
+        </div>
+        <div class="metric">
+          <span class="skeleton-block skeleton-metric-label"></span>
+          <span class="skeleton-block skeleton-metric-value"></span>
+        </div>
+      </div>
+    </article>
+  `;
+}
+
+function renderRegistryCard(document, isActive) {
+  return `
+    <button class="doc-card ${isActive ? "active" : ""}" data-id="${document.id}" type="button">
+      <div class="doc-topline">
+        <span class="doc-type-pill">${document.doc_type.code}</span>
+        <div>
+          <h3>${document.number}</h3>
+          <p class="doc-subtitle">${document.counterparty.name}</p>
+        </div>
+        <span class="mono">${formatDate(document.date)}</span>
+      </div>
+      <p class="doc-subtitle">${document.summary}</p>
+      <div class="doc-metrics">
+        <div class="metric">
+          <strong>${document.status}</strong>
+        </div>
+        <div class="metric">
+          <strong>${formatMoney(document.amount, document.currency)}</strong>
+        </div>
+      </div>
+    </button>
+  `;
+}
+
+function getRegistryWindow(app) {
+  const totalCount = app.state.registryTotalCount;
+  const limit = Math.min(getRegistryBatchSize(app), totalCount);
+  const itemHeight = getRegistryItemHeightEstimate(app);
+  const scrollTop = app.elements.documentList?.scrollTop ?? 0;
+  const firstVisibleIndex = Math.max(0, Math.floor(scrollTop / itemHeight));
+  const visibleCount = Math.max(1, Math.ceil(getRegistryViewportHeight(app) / itemHeight));
+  const bufferBefore = Math.max(0, Math.floor((limit - visibleCount) / 2));
+  const maxOffset = Math.max(0, totalCount - limit);
+  const offset = Math.min(Math.max(0, firstVisibleIndex - bufferBefore), maxOffset);
+
+  return {
+    offset,
+    limit,
+    visibleCount,
+    firstVisibleIndex,
+  };
+}
+
+function registryWindowCovered(app, windowState) {
+  const visibleStart = Math.max(0, windowState.firstVisibleIndex);
+  const visibleEnd = Math.min(
+    app.state.registryTotalCount,
+    visibleStart + windowState.visibleCount + Math.max(1, Math.floor(windowState.visibleCount / 2))
+  );
+
+  for (let index = visibleStart; index < visibleEnd; index += 1) {
+    if (!app.state.registryCache.has(index)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+function pruneRegistryCache(app, windowState) {
+  if (app.state.registryTotalCount <= 5000) {
+    return;
+  }
+
+  const keepFrom = Math.max(0, windowState.offset - windowState.limit * 3);
+  const keepTo = Math.min(
+    app.state.registryTotalCount,
+    windowState.offset + windowState.limit * 4
+  );
+
+  for (const index of app.state.registryCache.keys()) {
+    if (index < keepFrom || index >= keepTo) {
+      app.state.registryCache.delete(index);
+    }
+  }
+}
+
+function mergeRegistryItems(app, offset, items, windowState) {
+  items.forEach((item, index) => {
+    app.state.registryCache.set(offset + index, item);
+  });
+  pruneRegistryCache(app, windowState);
+}
+
+function getRegistryRenderEntries(app, windowState) {
+  const entries = [];
+  const end = Math.min(app.state.registryTotalCount, windowState.offset + windowState.limit);
+
+  for (let index = windowState.offset; index < end; index += 1) {
+    entries.push({
+      index,
+      document: app.state.registryCache.get(index) ?? null,
+    });
+  }
+
+  return entries;
+}
+
+async function loadRegistryPage(app, { force = false } = {}) {
+  if (!isRemoteRegistryEnabled(app)) return;
+  if (app.state.registryTotalCount <= 0) {
+    app.state.registryCache = new Map();
+    app.state.registryOffset = 0;
+    app.state.registryLimit = 0;
+    app.render();
+    return;
+  }
+
+  const windowState = getRegistryWindow(app);
+  if (!windowState.limit) return;
+  if (!force && registryWindowCovered(app, windowState)) return;
+
+  if (app.state.registryLoading) {
+    app.state.registryPendingLoad = true;
+    app.state.registryPendingForce = app.state.registryPendingForce || force;
+    app.state.registryRequestedOffset = windowState.offset;
+    app.state.registryRequestedLimit = windowState.limit;
+    return;
+  }
+
+  const requestId = app.state.registryRequestId + 1;
+  app.state.registryRequestId = requestId;
+  app.state.registryRequestedOffset = windowState.offset;
+  app.state.registryRequestedLimit = windowState.limit;
+  app.state.registryLoading = true;
+  app.render();
+
+  try {
+    const payload = await app.apiClient.fetchPresetPage(
+      buildRegistryPageRequest(app, {
+        preset: "list_item",
+        offset: windowState.offset,
+        limit: windowState.limit,
+      })
+    );
+
+    if (requestId !== app.state.registryRequestId) return;
+
+    const items = Array.isArray(payload?.items)
+      ? payload.items
+      : Array.isArray(payload?.data)
+        ? payload.data
+        : Array.isArray(payload)
+          ? payload
+          : [];
+
+    mergeRegistryItems(app, windowState.offset, items, windowState);
+    app.state.registryOffset = windowState.offset;
+    app.state.registryLimit = windowState.limit;
+    app.state.registryRequestedOffset = windowState.offset;
+    app.state.registryRequestedLimit = windowState.limit;
+    app.state.registryLoading = false;
+    if (typeof payload?.count === "number") {
+      app.state.registryTotalCount = payload.count;
+    }
+    app.render();
+    if (app.state.registryPendingLoad) {
+      const pendingForce = app.state.registryPendingForce;
+      app.state.registryPendingLoad = false;
+      app.state.registryPendingForce = false;
+      scheduleRegistryViewportWork(app, { force: pendingForce });
+    }
+  } catch (_error) {
+    if (requestId !== app.state.registryRequestId) return;
+    app.state.registryLoading = false;
+    app.state.registryLoadError = true;
+    app.win?.console?.warn?.(
+      `YrestAPI registry request failed for ${app.apiBaseUrl || "same-origin"}; falling back to local demo data.`
+    );
+    app.render();
+  }
+}
+
+async function refreshRegistry(app) {
+  if (isRemoteRegistryEnabled(app)) {
+    app.state.heroStats = null;
+    app.state.registryCache = new Map();
+    app.state.registryOffset = 0;
+    app.state.registryLimit = 0;
+    app.state.registryRequestedOffset = 0;
+    app.state.registryRequestedLimit = 0;
+    app.state.registryPendingLoad = false;
+    app.state.registryPendingForce = false;
+    app.state.registryTotalCount = 0;
+    app.state.selectedDocumentId = null;
+    app.state.selectedDocumentDetail = null;
+    app.state.detailCache = new Map();
+    app.state.detailLoading = false;
+    app.state.detailLoadError = false;
+    if (app.elements.documentList) {
+      app.elements.documentList.scrollTop = 0;
+    }
+    app.render();
+    await app.loadHeroStats();
+    return;
+  }
+
+  app.render();
+}
+
+async function loadSelectedDocumentDetail(app, documentId) {
+  if (!isRemoteRegistryEnabled(app) || !app.apiClient || documentId === null) return;
+
+  const cached = app.state.detailCache.get(documentId) ?? null;
+  if (cached) {
+    app.state.selectedDocumentDetail = cached;
+    app.state.detailLoading = false;
+    app.state.detailLoadError = false;
+    app.render();
+    return;
+  }
+
+  const requestId = app.state.detailRequestId + 1;
+  app.state.detailRequestId = requestId;
+  app.state.detailLoading = true;
+  app.state.detailLoadError = false;
+  app.state.selectedDocumentDetail = null;
+  app.render();
+
+  try {
+    const item = await app.apiClient.fetchPresetItem({
+      model: "Document",
+      preset: "detail",
+      id: documentId,
+    });
+
+    if (requestId !== app.state.detailRequestId) return;
+    if (app.state.selectedDocumentId !== documentId) return;
+
+    app.state.detailLoading = false;
+    if (!item) {
+      app.state.detailLoadError = true;
+      app.state.selectedDocumentDetail = null;
+      app.render();
+      return;
+    }
+
+    app.state.detailCache.set(documentId, item);
+    app.state.selectedDocumentDetail = item;
+    app.render();
+  } catch (_error) {
+    if (requestId !== app.state.detailRequestId) return;
+    app.state.detailLoading = false;
+    app.state.detailLoadError = true;
+    app.state.selectedDocumentDetail = null;
+    app.render();
+  }
+}
+
+function selectDocument(app, documentId) {
+  if (app.state.selectedDocumentId === documentId) {
+    return;
+  }
+
+  app.state.selectedDocumentId = documentId;
+
+  if (!isRemoteRegistryEnabled(app)) {
+    app.render();
+    if (app.elements.detailsPanel) {
+      app.elements.detailsPanel.scrollTop = 0;
+    }
+    app.syncHeroVisibility();
+    return;
+  }
+
+  app.state.selectedDocumentDetail = app.state.detailCache.get(documentId) ?? null;
+  app.state.detailLoadError = false;
+  app.render();
+  if (app.elements.detailsPanel) {
+    app.elements.detailsPanel.scrollTop = 0;
+  }
+  app.syncHeroVisibility();
+  void loadSelectedDocumentDetail(app, documentId);
 }
 
 function renderTypeFilter(app) {
@@ -664,7 +1143,56 @@ function renderTypeFilter(app) {
 function renderDocumentList(app, filteredDocuments) {
   if (!app.elements.documentList || !app.elements.documentCount) return;
 
-  app.elements.documentCount.textContent = `${filteredDocuments.length} items`;
+  const totalCount = getRegistryTotalCount(app);
+  app.elements.documentCount.textContent = `${totalCount} items`;
+
+  if (isRemoteRegistryEnabled(app)) {
+    if (!totalCount && !app.state.registryLoading) {
+      app.elements.documentList.innerHTML = `
+        <div class="empty-state">
+          <h3>No documents found</h3>
+          <p>Adjust the filter or search query.</p>
+        </div>
+      `;
+      return;
+    }
+
+    const itemHeight = getRegistryItemHeightEstimate(app);
+    const { cardHeight, rowStride } = getRegistryMetrics(app);
+    const renderWindow = {
+      offset: getRegistryWindow(app).offset,
+      limit: Math.min(getRegistryBatchSize(app), totalCount),
+    };
+    const renderEntries = getRegistryRenderEntries(app, renderWindow);
+    const canvasHeight = Math.max(totalCount * rowStride - (totalCount > 0 ? rowStride - cardHeight : 0), 0);
+
+    app.elements.documentList.innerHTML = `
+      <div class="registry-virtual-canvas" style="height:${canvasHeight}px">
+        ${renderEntries
+          .map(({ index, document }) => {
+            const top = index * rowStride;
+            return `
+              <div class="registry-virtual-row" style="top:${top}px;height:${cardHeight}px">
+                ${
+                  document
+                    ? renderRegistryCard(document, document.id === app.state.selectedDocumentId)
+                    : renderRegistrySkeletonCard()
+                }
+              </div>
+            `;
+          })
+          .join("")}
+      </div>
+      ${app.state.registryLoading ? '<div class="registry-status">Loading more documents...</div>' : ""}
+    `;
+
+    app.elements.documentList.querySelectorAll("[data-id]").forEach((button) => {
+      button.addEventListener("click", () => {
+        selectDocument(app, Number(button.dataset.id));
+      });
+    });
+    return;
+  }
 
   if (!filteredDocuments.length) {
     app.elements.documentList.innerHTML = `
@@ -676,49 +1204,51 @@ function renderDocumentList(app, filteredDocuments) {
     return;
   }
 
-  app.elements.documentList.innerHTML = filteredDocuments
-    .map((document) => {
-      const isActive = document.id === app.state.selectedDocumentId;
-      return `
-        <button class="doc-card ${isActive ? "active" : ""}" data-id="${document.id}" type="button">
-          <div class="doc-topline">
-            <span class="doc-type-pill">${document.doc_type.code}</span>
-            <div>
-              <h3>${document.number}</h3>
-              <p class="doc-subtitle">${document.counterparty.name}</p>
-            </div>
-            <span class="mono">${formatDate(document.date)}</span>
-          </div>
-          <p class="doc-subtitle">${document.summary}</p>
-          <div class="doc-metrics">
-            <div class="metric">
-              <span class="meta-label">Status</span>
-              <strong>${document.status}</strong>
-            </div>
-            <div class="metric">
-              <span class="meta-label">Amount</span>
-              <strong>${formatMoney(document.amount, document.currency)}</strong>
-            </div>
-          </div>
-        </button>
-      `;
-    })
-    .join("");
+  app.elements.documentList.innerHTML = `
+    ${filteredDocuments
+      .map((document) => renderRegistryCard(document, document.id === app.state.selectedDocumentId))
+      .join("")}
+  `;
 
   app.elements.documentList.querySelectorAll("[data-id]").forEach((button) => {
     button.addEventListener("click", () => {
-      app.state.selectedDocumentId = Number(button.dataset.id);
-      app.render();
-      if (app.elements.detailsPanel) {
-        app.elements.detailsPanel.scrollTop = 0;
-      }
-      app.syncHeroVisibility();
+      selectDocument(app, Number(button.dataset.id));
     });
   });
 }
 
 function renderDetails(app, document) {
   if (!app.elements.details) return;
+
+  if (app.state.selectedDocumentId === null) {
+    app.elements.details.innerHTML = `
+      <div class="empty-state">
+        <h3>No document selected</h3>
+        <p>Select a record from the registry on the left.</p>
+      </div>
+    `;
+    return;
+  }
+
+  if (isRemoteRegistryEnabled(app) && app.state.detailLoading) {
+    app.elements.details.innerHTML = `
+      <div class="empty-state">
+        <h3>Loading document</h3>
+        <p>The full document is being requested from the API.</p>
+      </div>
+    `;
+    return;
+  }
+
+  if (isRemoteRegistryEnabled(app) && app.state.detailLoadError) {
+    app.elements.details.innerHTML = `
+      <div class="empty-state">
+        <h3>Document loading failed</h3>
+        <p>Try selecting the document again.</p>
+      </div>
+    `;
+    return;
+  }
 
   if (!document) {
     app.elements.details.innerHTML = `
@@ -789,10 +1319,8 @@ function renderDetails(app, document) {
 }
 
 function syncHeroVisibility(app) {
-  const heroCollapsed = app.state.heroPinnedCollapsed && !app.state.heroForcedVisible;
-  const heroPeek = app.state.heroPinnedCollapsed && app.state.heroForcedVisible;
-  app.elements.pageShell?.classList.toggle("hero-collapsed", heroCollapsed);
-  app.elements.pageShell?.classList.toggle("hero-peek", heroPeek);
+  app.elements.pageShell?.classList.toggle("hero-collapsed", false);
+  app.elements.pageShell?.classList.toggle("hero-peek", false);
 }
 
 function handlePaneScroll(app, kind) {
@@ -811,21 +1339,48 @@ function handlePaneScroll(app, kind) {
   syncHeroVisibility(app);
 }
 
+function scheduleRegistryViewportWork(app, { force = false } = {}) {
+  if (!isRemoteRegistryEnabled(app)) return;
+
+  const run = () => {
+    app.state.registryScrollRafId = null;
+    renderRegistryViewport(app);
+    void app.loadRegistryPage({ force });
+  };
+
+  if (!app.win || typeof app.win.requestAnimationFrame !== "function") {
+    run();
+    return;
+  }
+
+  if (app.state.registryScrollRafId !== null) {
+    return;
+  }
+
+  app.state.registryScrollRafId = app.win.requestAnimationFrame(run);
+}
+
 function bindEvents(app) {
   app.elements.searchInput?.addEventListener("input", (event) => {
     app.state.search = event.target.value;
-    app.render();
+    void app.refreshRegistry();
   });
 
   app.elements.typeFilter?.addEventListener("change", (event) => {
     app.state.typeId = event.target.value;
-    app.render();
-    void app.loadHeroStats();
+    void app.refreshRegistry();
   });
 
-  app.elements.documentList?.addEventListener("scroll", () => handlePaneScroll(app, "registry"), {
-    passive: true,
-  });
+  app.elements.documentList?.addEventListener(
+    "scroll",
+    () => {
+      handlePaneScroll(app, "registry");
+      scheduleRegistryViewportWork(app);
+    },
+    {
+      passive: true,
+    }
+  );
   app.elements.detailsPanel?.addEventListener("scroll", () => handlePaneScroll(app, "details"), {
     passive: true,
   });
@@ -840,6 +1395,14 @@ function bindEvents(app) {
     },
     { passive: true }
   );
+
+  app.win?.addEventListener(
+    "resize",
+    () => {
+      scheduleRegistryViewportWork(app, { force: true });
+    },
+    { passive: true }
+  );
 }
 
 function createApp({
@@ -847,26 +1410,26 @@ function createApp({
   win = globalThis.window,
   fetchImpl = globalThis.fetch,
   apiBaseUrl = "",
+  apiClient = createYrestApiClient
+    ? createYrestApiClient({ fetchImpl, apiBaseUrl })
+    : null,
 } = {}) {
   const app = {
     doc,
     win,
     fetchImpl,
     apiBaseUrl,
+    apiClient,
     docTypes,
     documents,
     state: createInitialState(),
     elements: createElements(doc),
     render() {
-      const filteredDocuments = getFilteredDocuments(app);
-      ensureSelection(app, filteredDocuments);
-      app.state.heroStats = null;
+      const registryDocuments = getRegistryDocuments(app);
+      ensureSelection(app, registryDocuments);
       renderStats(app);
-      renderDocumentList(app, filteredDocuments);
-      renderDetails(
-        app,
-        filteredDocuments.find((document) => document.id === app.state.selectedDocumentId)
-      );
+      renderDocumentList(app, registryDocuments);
+      renderDetails(app, getSelectedDocument(app));
       syncHeroVisibility(app);
     },
     renderStats() {
@@ -874,6 +1437,21 @@ function createApp({
     },
     loadHeroStats() {
       return loadHeroStats(app);
+    },
+    loadRegistryPage(options) {
+      return loadRegistryPage(app, options);
+    },
+    refreshRegistry() {
+      return refreshRegistry(app);
+    },
+    selectDocument(documentId) {
+      return selectDocument(app, documentId);
+    },
+    loadSelectedDocumentDetail(documentId) {
+      return loadSelectedDocumentDetail(app, documentId);
+    },
+    buildRegistryPageRequest(options) {
+      return buildRegistryPageRequest(app, options);
     },
     renderTypeFilter() {
       renderTypeFilter(app);
@@ -892,7 +1470,7 @@ function createApp({
       app.renderTypeFilter();
       app.bindEvents();
       app.render();
-      void app.loadHeroStats();
+      void app.refreshRegistry();
       return app;
     },
   };
@@ -908,7 +1486,9 @@ if (typeof module !== "undefined" && module.exports) {
     createInitialState,
     buildLocalHeroStats,
     buildRemoteHeroStats,
+    buildRegistryFilters,
     buildStatRequest,
+    buildRegistryPageRequest,
     docTypes,
     documents,
     flattenNodes,
@@ -922,5 +1502,9 @@ if (typeof module !== "undefined" && module.exports) {
 }
 
 if (typeof window !== "undefined" && typeof document !== "undefined") {
-  window.YrestDemoApp = createApp({ doc: document, win: window }).init();
+  window.YrestDemoApp = createApp({
+    doc: document,
+    win: window,
+    apiBaseUrl: resolveBrowserApiBaseUrl(window),
+  }).init();
 }
