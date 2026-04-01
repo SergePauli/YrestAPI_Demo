@@ -395,6 +395,7 @@ function createInitialState() {
     heroPinnedCollapsed: false,
     heroForcedVisible: false,
     heroStats: null,
+    heroStatsLoaded: false,
     lastRegistryScrollTop: 0,
     lastDetailsScrollTop: 0,
     registryCache: new Map(),
@@ -461,7 +462,7 @@ function buildRegistryFilters(app, extraFilters = {}) {
   }
 
   if (app.state.search.trim()) {
-    filters["number_or_counterparty.name_or_counterparty.tax_id_or_summary__cnt"] = app.state.search.trim();
+    filters["number_or_counterparty.name_or_counterparty.tin_or_summary__cnt"] = app.state.search.trim();
   }
 
   return {
@@ -471,17 +472,22 @@ function buildRegistryFilters(app, extraFilters = {}) {
 }
 
 function buildStatRequest(app) {
-  const filters = buildRegistryFilters(app);
-
   return {
     model: "Document",
-    filters,
+    filters: {},
     aggregates: {
       total_amount: { fn: "sum", field: "amount" },
       avg_amount: { fn: "avg", field: "amount" },
       min_date: { fn: "min", field: "document_date" },
       max_date: { fn: "max", field: "document_date" },
     },
+  };
+}
+
+function buildRegistryStatRequest(app) {
+  return {
+    model: "Document",
+    filters: buildRegistryFilters(app),
   };
 }
 
@@ -663,18 +669,17 @@ function ensureSelection(app, registryDocuments) {
 }
 
 function buildLocalHeroStats(app) {
-  const filteredDocuments = getFilteredDocuments(app);
-  const totalAmount = filteredDocuments.reduce((sum, document) => sum + document.amount, 0);
-  const dates = filteredDocuments.map((document) => document.date).sort();
+  const totalAmount = app.documents.reduce((sum, document) => sum + document.amount, 0);
+  const dates = app.documents.map((document) => document.date).sort();
 
   return [
-    { label: "Documents", value: String(filteredDocuments.length) },
+    { label: "Documents", value: String(app.documents.length) },
     { label: "Total amount", value: formatMoney(totalAmount, "RUB") },
     {
       label: "Average amount",
       value:
-        filteredDocuments.length > 0
-          ? formatMoney(totalAmount / filteredDocuments.length, "RUB")
+        app.documents.length > 0
+          ? formatMoney(totalAmount / app.documents.length, "RUB")
           : formatMoney(0, "RUB"),
     },
     {
@@ -714,7 +719,10 @@ function renderStats(app) {
 
   const stats = app.state.heroStats ?? buildLocalHeroStats(app);
   const visibleStats = stats.filter(
-    (stat) => stat.label === "Documents" || stat.label === "Date range"
+    (stat) =>
+      stat.label === "Documents" ||
+      stat.label === "Total amount" ||
+      stat.label === "Date range"
   );
 
   app.elements.heroStats.innerHTML = visibleStats
@@ -735,27 +743,39 @@ function renderRegistryViewport(app) {
 }
 
 async function loadHeroStats(app) {
-  if (!app.apiClient) return;
+  if (!app.apiClient || app.state.heroStatsLoaded) return;
 
   try {
     const payload = await app.apiClient.fetchStats(buildStatRequest(app));
     const stats = buildRemoteHeroStats(app, payload);
     if (!stats) return;
-    app.state.registryTotalCount = Number(payload.count ?? 0);
     app.state.heroStats = stats;
+    app.state.heroStatsLoaded = true;
     renderStats(app);
-    if (isRemoteRegistryEnabled(app)) {
-      await app.loadRegistryPage({ force: true });
-    }
   } catch (_error) {
     app.state.registryLoadError = true;
-    app.state.registryTotalCount = documents.length;
     app.state.heroStats = null;
     app.win?.console?.warn?.(
       `YrestAPI stats request failed for ${app.apiBaseUrl || "same-origin"}; falling back to local demo data.`
     );
     renderStats(app);
     app.render();
+  }
+}
+
+async function loadRegistryStats(app) {
+  if (!app.apiClient) return;
+
+  try {
+    const payload = await app.apiClient.fetchStats(buildRegistryStatRequest(app));
+    app.state.registryTotalCount = Number(payload?.count ?? 0);
+    app.state.registryLoadError = false;
+  } catch (_error) {
+    app.state.registryLoadError = true;
+    app.state.registryTotalCount = documents.length;
+    app.win?.console?.warn?.(
+      `YrestAPI registry stats request failed for ${app.apiBaseUrl || "same-origin"}; falling back to local demo data.`
+    );
   }
 }
 
@@ -1028,7 +1048,6 @@ async function loadRegistryPage(app, { force = false } = {}) {
 
 async function refreshRegistry(app) {
   if (isRemoteRegistryEnabled(app)) {
-    app.state.heroStats = null;
     app.state.registryCache = new Map();
     app.state.registryOffset = 0;
     app.state.registryLimit = 0;
@@ -1046,7 +1065,12 @@ async function refreshRegistry(app) {
       app.elements.documentList.scrollTop = 0;
     }
     app.render();
-    await app.loadHeroStats();
+    await loadRegistryStats(app);
+    if (!app.state.registryLoadError) {
+      await app.loadRegistryPage({ force: true });
+    } else {
+      app.render();
+    }
     return;
   }
 
@@ -1438,6 +1462,9 @@ function createApp({
     loadHeroStats() {
       return loadHeroStats(app);
     },
+    loadRegistryStats() {
+      return loadRegistryStats(app);
+    },
     loadRegistryPage(options) {
       return loadRegistryPage(app, options);
     },
@@ -1470,6 +1497,9 @@ function createApp({
       app.renderTypeFilter();
       app.bindEvents();
       app.render();
+      if (app.apiClient) {
+        void app.loadHeroStats();
+      }
       void app.refreshRegistry();
       return app;
     },
@@ -1488,6 +1518,7 @@ if (typeof module !== "undefined" && module.exports) {
     buildRemoteHeroStats,
     buildRegistryFilters,
     buildStatRequest,
+    buildRegistryStatRequest,
     buildRegistryPageRequest,
     docTypes,
     documents,

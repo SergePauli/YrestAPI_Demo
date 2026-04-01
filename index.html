@@ -15,14 +15,24 @@
   <body>
     <div class="page-shell" id="page-shell">
       <header class="hero">
-        <div class="hero-copy-block">
-          <p class="eyebrow">YrestAPI Demo</p>
-          <h1>Primary accounting documents overview</h1>
-          <p class="hero-copy">
-            A compact registry and a structured detail view for heterogeneous accounting documents.
-          </p>
+        <div class="hero-main">
+          <nav class="hero-breadcrumbs" aria-label="Breadcrumb">
+            <span>YrestAPI Demo</span>
+            <span class="hero-breadcrumb-sep">›</span>
+            <span>Documents</span>
+          </nav>
+          <div class="hero-copy-block">
+            <h1>Primary accounting documents</h1>
+            <p class="hero-copy">
+              A compact registry and a structured detail view for heterogeneous accounting documents.
+            </p>
+          </div>
+          <div class="hero-stats" id="hero-stats"></div>
         </div>
-        <div class="hero-stats" id="hero-stats"></div>
+        <div class="hero-actions">
+          <button class="hero-action ghost" type="button">Registry</button>
+          <button class="hero-action primary" type="button">Detail View</button>
+        </div>
       </header>
 
       <main class="workspace">

@@ -5,6 +5,7 @@ const {
   canRenderChildrenAsTable,
   createApp,
   buildRegistryPageRequest,
+  buildRegistryStatRequest,
   buildStatRequest,
   documents,
   flattenNodes,
@@ -187,6 +188,7 @@ test("init renders registry, stats, details, and wires handlers", () => {
 
   assert.equal(app.state.selectedDocumentId, null);
   assert.match(doc.byId["hero-stats"].innerHTML, /Documents/);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Total amount/);
   assert.match(doc.byId["hero-stats"].innerHTML, /Date range/);
 });
 
@@ -261,7 +263,7 @@ test("flattenNodes preserves full node count and hierarchical paths", () => {
   );
 });
 
-test("hero stats request uses /api/stats and current type filter", async () => {
+test("hero stats request uses /api/stats without registry filters", async () => {
   const requests = [];
   const fetchImpl = async (url, options) => {
     requests.push({ url, options });
@@ -281,19 +283,24 @@ test("hero stats request uses /api/stats and current type filter", async () => {
     };
   };
 
-  const { app, doc } = setupApp({ fetchImpl });
+  const doc = new FakeDocument();
+  const win = new FakeWindow();
+  const app = createApp({ doc, win, fetchImpl });
+  app.renderTypeFilter();
+  app.render();
 
   await app.loadHeroStats();
   assert.equal(requests[0].url, "/api/stats");
   assert.deepEqual(JSON.parse(requests[0].options.body), buildStatRequest(app));
   assert.match(doc.byId["hero-stats"].innerHTML, /Documents/);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Total amount/);
   assert.match(doc.byId["hero-stats"].innerHTML, /Date range/);
 
-  doc.byId["type-filter"].dispatch("change", { target: { value: "invoice" } });
+  app.state.typeId = "invoice";
   await app.loadHeroStats();
 
-  const payload = JSON.parse(requests[requests.length - 1].options.body);
-  assert.equal(payload.filters["doc_type.code__eq"], "INV");
+  assert.equal(requests.length, 1);
+  assert.deepEqual(JSON.parse(requests[0].options.body).filters, {});
 });
 
 test("hero stats fall back to local values when /api/stat fails", async () => {
@@ -305,6 +312,7 @@ test("hero stats fall back to local values when /api/stat fails", async () => {
   await app.loadHeroStats();
 
   assert.match(doc.byId["hero-stats"].innerHTML, /Documents/);
+  assert.match(doc.byId["hero-stats"].innerHTML, /Total amount/);
   assert.match(doc.byId["hero-stats"].innerHTML, /Date range/);
 });
 
@@ -321,7 +329,22 @@ test("registry page request includes preset, offset, limit, and active filters",
     limit: 20,
     filters: {
       "doc_type.code__eq": "PO",
-      "number_or_counterparty.name_or_counterparty.tax_id_or_summary__cnt": "Northern Bank",
+      "number_or_counterparty.name_or_counterparty.tin_or_summary__cnt": "Northern Bank",
+    },
+  });
+});
+
+test("registry stats request includes active filters", () => {
+  const { app, doc } = setupApp();
+
+  doc.byId["search-input"].dispatch("input", { target: { value: "Northern Bank" } });
+  doc.byId["type-filter"].dispatch("change", { target: { value: "payment_order" } });
+
+  assert.deepEqual(buildRegistryStatRequest(app), {
+    model: "Document",
+    filters: {
+      "doc_type.code__eq": "PO",
+      "number_or_counterparty.name_or_counterparty.tin_or_summary__cnt": "Northern Bank",
     },
   });
 });
