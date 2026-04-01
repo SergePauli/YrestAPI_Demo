@@ -461,7 +461,7 @@ function buildRegistryFilters(app, extraFilters = {}) {
   }
 
   if (app.state.search.trim()) {
-    filters["q__ilike"] = app.state.search.trim();
+    filters["number_or_counterparty.name_or_counterparty.tax_id_or_summary__cnt"] = app.state.search.trim();
   }
 
   return {

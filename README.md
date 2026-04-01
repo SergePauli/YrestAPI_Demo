@@ -31,8 +31,6 @@ Frontend API targeting:
 This repository now includes a Compose stack in [compose.yaml](/home/serge/Projects/YrestAPI_Demo/compose.yaml):
 
 - `db`: PostgreSQL 16
-- `db-migrate`: explicit SQL migration runner for files in [db/migrations](/home/serge/Projects/YrestAPI_Demo/db/migrations)
-- `db-seed`: explicit SQL seed runner for files in [db/seeds](/home/serge/Projects/YrestAPI_Demo/db/seeds)
 - `yrestapi`: built from the local sibling repository `../YrestAPI`
 
 The mounted directories are:
@@ -48,17 +46,24 @@ For local frontend development on `http://127.0.0.1:5500`, CORS is exposed throu
 - `CORS_ALLOW_ORIGIN=http://127.0.0.1:5500`
 - `CORS_ALLOW_CREDENTIALS=false`
 
-To start the backend stack:
+To start the backend stack on a clean volume:
 
 ```bash
 cp .env.example .env
-docker compose --profile setup up --build
+docker compose up --build
 ```
 
-To start the backend without rerunning migrations and seed:
+PostgreSQL now initializes the schema and demo data automatically from `docker-entrypoint-initdb.d` on the first start of an empty volume. That means:
+
+- first boot on a new volume: schema + seed are applied automatically
+- later `docker compose up --build`: data is reused as-is
+- to rebuild the demo database from scratch, remove the volume first
+
+To rebuild the demo database from scratch:
 
 ```bash
 cp .env.example .env
+docker compose down -v --remove-orphans
 docker compose up --build
 ```
 
@@ -72,11 +77,8 @@ Current schema draft:
 
 Migration behavior:
 
-- `db` starts first
-- `db-migrate` applies every `*.sql` file from [db/migrations](/home/serge/Projects/YrestAPI_Demo/db/migrations) in filename order
-- `db-seed` applies every `*.sql` file from [db/seeds](/home/serge/Projects/YrestAPI_Demo/db/seeds) in filename order
-- `yrestapi` always waits for PostgreSQL health
-- use `--profile setup` when you want migrations and seed to run before the API startup
+- on the first start of an empty PostgreSQL volume, `001_schema.sql` runs before `001_demo_seed.sql`
+- `yrestapi` waits for PostgreSQL health and only starts after database initialization is complete
 
 ## Next Step
 

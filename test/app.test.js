@@ -321,7 +321,7 @@ test("registry page request includes preset, offset, limit, and active filters",
     limit: 20,
     filters: {
       "doc_type.code__eq": "PO",
-      "q__ilike": "Northern Bank",
+      "number_or_counterparty.name_or_counterparty.tax_id_or_summary__cnt": "Northern Bank",
     },
   });
 });

@@ -18,56 +18,9 @@ services:
       - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
-
-  db-migrate:
-    image: postgres:16-alpine
-    profiles: ["setup"]
-    depends_on:
-      db:
-        condition: service_healthy
-    environment:
-      PGHOST: db
-      PGPORT: 5432
-      PGDATABASE: ${POSTGRES_DB:-yrest_demo}
-      PGUSER: ${POSTGRES_USER:-postgres}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
-    volumes:
-      - ./db/migrations:/migrations:ro
-    entrypoint:
-      - /bin/sh
-      - -ec
-      - |
-        for file in /migrations/*.sql; do
-          if [ -f "$$file" ]; then
-            echo "Applying migration: $$file"
-            psql -v ON_ERROR_STOP=1 -f "$$file"
-          fi
-        done
-
-  db-seed:
-    image: postgres:16-alpine
-    profiles: ["setup"]
-    depends_on:
-      db-migrate:
-        condition: service_completed_successfully
-    environment:
-      PGHOST: db
-      PGPORT: 5432
-      PGDATABASE: ${POSTGRES_DB:-yrest_demo}
-      PGUSER: ${POSTGRES_USER:-postgres}
-      PGPASSWORD: ${POSTGRES_PASSWORD:-postgres}
-    volumes:
-      - ./db/seeds:/seeds:ro
-    entrypoint:
-      - /bin/sh
-      - -ec
-      - |
-        for file in /seeds/*.sql; do
-          if [ -f "$$file" ]; then
-            echo "Applying seed: $$file"
-            psql -v ON_ERROR_STOP=1 -f "$$file"
-          fi
-        done
+      - ./db/migrations/001_schema.sql:/docker-entrypoint-initdb.d/001_schema.sql:ro
+      - ./db/seeds/001_demo_seed.sql:/docker-entrypoint-initdb.d/002_demo_seed.sql:ro
+      - ./db/seeds/counterparties.csv:/docker-entrypoint-initdb.d/counterparties.csv:ro
 
   yrestapi:
     build:

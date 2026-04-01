@@ -2,6 +2,10 @@
   "name": "yrestapi-demo",
   "private": true,
   "scripts": {
+    "seed:counterparties": "node scripts/generate-counterparties-seed.mjs",
     "test": "node --test"
+  },
+  "devDependencies": {
+    "@faker-js/faker": "^9.9.0"
   }
 }

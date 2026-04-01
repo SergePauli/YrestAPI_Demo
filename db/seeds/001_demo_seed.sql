@@ -126,12 +126,7 @@ join (
 ) as a(node_key, name, value, value_date, value_int, value_double, value_boolean, position)
   on a.node_key = n.key;
 
-insert into counterparties (name, tin, tax_registration_code)
-select
-  format('Counterparty %s LLC', gs),
-  lpad((7700000000 + gs)::text, 10, '0'),
-  lpad((770400000 + gs)::text, 9, '0')
-from generate_series(1, 240) as gs;
+\copy counterparties (name, tin, tax_registration_code) from '/docker-entrypoint-initdb.d/counterparties.csv' with (format csv);
 
 with doc_type_source as (
   select *
